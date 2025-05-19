@@ -3,9 +3,10 @@ import pandas as pd
 from docx import Document
 from io import BytesIO
 from openai import OpenAI
+import re
 
 # ---------- واجهة التطبيق ----------
-st.set_page_config(page_title="كشافات علمية من النص الكامل", layout="wide")
+st.set_page_config(page_title="كشافات علمية مع رقم الصفحة", layout="wide")
 st.title("📚 استخراج الكشافات العلمية من نص كامل لشيخ الإسلام ابن تيمية")
 
 # ---------- إدخال البيانات ----------
@@ -48,7 +49,7 @@ def generate_prompt(text):
 {text}
 """
 
-# ---------- التحليل ----------
+# ---------- تحليل النص باستخدام OpenAI ----------
 def analyze_text_with_gpt(text, model, api_key):
     client = OpenAI(api_key=api_key)
     prompt = generate_prompt(text)
@@ -64,19 +65,45 @@ def analyze_text_with_gpt(text, model, api_key):
 
     return response.choices[0].message.content.strip()
 
-# ---------- تحويل النتائج إلى جدول ----------
-def parse_response_to_df(response_text):
+# ---------- تقسيم النص حسب أرقام الصفحات ----------
+def split_text_by_page(text):
+    pattern = r"</<(\d+)>"
+    parts = re.split(pattern, text)
+    
+    page_chunks = []
+    for i in range(1, len(parts), 2):
+        page_number = int(parts[i])
+        content = parts[i+1].strip()
+        page_chunks.append({
+            "page": page_number,
+            "content": content
+        })
+    return page_chunks
+
+# ---------- تحديد رقم الصفحة بناءً على مطلع الفقرة ----------
+def find_page_for_excerpt(excerpt, page_chunks):
+    for chunk in page_chunks:
+        if excerpt in chunk["content"]:
+            return chunk["page"]
+    return "غير معروف"
+
+# ---------- تحويل مخرجات النموذج إلى DataFrame ----------
+def parse_response_to_df(response_text, page_chunks):
     rows = []
     lines = response_text.strip().splitlines()
 
     for line in lines:
         parts = [part.strip() for part in line.split("|")]
         if len(parts) >= 4:
+            excerpt = parts[0]
+            page = find_page_for_excerpt(excerpt, page_chunks)
+
             rows.append({
-                "مطلع الفقرة": parts[0],
+                "مطلع الفقرة": excerpt,
                 "نوع الكشاف": parts[1],
                 "عنوان الكشاف": parts[2],
-                "سبب التصنيف": parts[3]
+                "سبب التصنيف": parts[3],
+                "رقم الصفحة": page
             })
 
     return pd.DataFrame(rows)
@@ -86,8 +113,9 @@ if st.button("🚀 تحليل النص") and uploaded_file and openai_key:
     with st.spinner("جاري تحليل النص..."):
         try:
             full_text = extract_full_text(uploaded_file)
+            page_chunks = split_text_by_page(full_text)
             response_text = analyze_text_with_gpt(full_text, model_choice, openai_key)
-            df = parse_response_to_df(response_text)
+            df = parse_response_to_df(response_text, page_chunks)
 
             # حفظ ملف إكسل
             excel_io = BytesIO()
@@ -95,11 +123,10 @@ if st.button("🚀 تحليل النص") and uploaded_file and openai_key:
             st.session_state.excel_output = excel_io
 
             st.success("✅ تم استخراج الكشافات بنجاح!")
-
             st.dataframe(df)
 
         except Exception as e:
-            st.error(f"حدث خطأ: {e}")
+            st.error(f"حدث خطأ أثناء التحليل: {e}")
 
 # ---------- زر التحميل ----------
 if st.session_state.excel_output:
